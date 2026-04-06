@@ -208,9 +208,21 @@ def parse_cv():
             file_base64 = file_base64.split(',')[1]
 
         try:
+            # ✅ Nettoyer le préfixe data:...;base64,
+            if ',' in file_base64:
+                file_base64 = file_base64.split(',')[1]
+            
+            # ✅ Nettoyer les espaces et sauts de ligne
+            file_base64 = file_base64.strip().replace(' ', '+').replace('\n', '').replace('\r', '')
+            
+            # ✅ Ajouter padding si manquant
+            padding = 4 - len(file_base64) % 4
+            if padding != 4:
+                file_base64 += '=' * padding
+            
             file_bytes = base64.b64decode(file_base64)
-        except Exception:
-            return jsonify({'error': 'Base64 invalide'}), 400
+        except Exception as e:
+            return jsonify({'error': f'Base64 invalide: {str(e)}'}), 400
 
         # Extraire le texte selon le type
         text = ""
