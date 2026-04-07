@@ -185,83 +185,121 @@ def parse_annee_obtention(text):
     return None
 
 # ══════════════════════════════════════════════
-# ROUTE PRINCIPALE
+# ROUTE PRINCIPALE - CORRIGÉE
 # ══════════════════════════════════════════════
 
 @app.route('/parse-cv', methods=['POST'])
 def parse_cv():
     try:
-        data = request.get_json()
+        data = request.get_json(force=True, silent=True)
+        
         if not data:
+            logging.error("Body JSON vide ou invalide")
             return jsonify({'error': 'Body JSON requis'}), 400
 
-        # Récupérer le fichier en base64
-        file_base64    = data.get('fileBase64', '')
-        file_name      = data.get('fileName', '').lower()
-        content_type   = data.get('contentType', '')
+        file_base64  = data.get('fileBase64', '')
+        file_name    = data.get('fileName', '').lower().strip()
+        content_type = data.get('contentType', '').lower().strip()
+
+        logging.info(f"Fichier reçu: {file_name} | Type: {content_type}")
+        logging.info(f"Base64 longueur brute: {len(file_base64)}")
 
         if not file_base64:
             return jsonify({'error': 'fileBase64 manquant'}), 400
 
-        # Décoder le base64
+        # ✅ Nettoyer le base64 - enlever le préfixe data:...;base64,
         if ',' in file_base64:
             file_base64 = file_base64.split(',')[1]
 
+        # ✅ Nettoyer les caractères indésirables
+        file_base64 = file_base64.strip()
+        file_base64 = file_base64.replace(' ', '+')
+        file_base64 = file_base64.replace('\n', '')
+        file_base64 = file_base64.replace('\r', '')
+        file_base64 = file_base64.replace('\t', '')
+
+        # ✅ Ajouter le padding manquant
+        missing_padding = len(file_base64) % 4
+        if missing_padding:
+            file_base64 += '=' * (4 - missing_padding)
+
+        logging.info(f"Base64 longueur nettoyée: {len(file_base64)}")
+
         try:
-            # ✅ Nettoyer le préfixe data:...;base64,
-            if ',' in file_base64:
-                file_base64 = file_base64.split(',')[1]
-            
-            # ✅ Nettoyer les espaces et sauts de ligne
-            file_base64 = file_base64.strip().replace(' ', '+').replace('\n', '').replace('\r', '')
-            
-            # ✅ Ajouter padding si manquant
-            padding = 4 - len(file_base64) % 4
-            if padding != 4:
-                file_base64 += '=' * padding
-            
-            file_bytes = base64.b64decode(file_base64)
+            file_bytes = base64.b64decode(file_base64, validate=False)
+            logging.info(f"Bytes décodés: {len(file_bytes)}")
         except Exception as e:
+            logging.error(f"Erreur décodage base64: {e}")
             return jsonify({'error': f'Base64 invalide: {str(e)}'}), 400
 
-        # Extraire le texte selon le type
+        if len(file_bytes) < 100:
+            return jsonify({'error': 'Fichier trop petit ou corrompu'}), 400
+
+        # ✅ Détecter le type de fichier
         text = ""
-        if 'pdf' in content_type or file_name.endswith('.pdf'):
+        is_pdf  = 'pdf' in content_type or file_name.endswith('.pdf')
+        is_docx = 'officedocument' in content_type or file_name.endswith('.docx')
+        is_doc  = 'msword' in content_type or file_name.endswith('.doc')
+
+        # ✅ Détection par magic bytes si content_type vide
+        if not is_pdf and not is_docx and not is_doc:
+            if file_bytes[:4] == b'%PDF':
+                is_pdf = True
+            elif file_bytes[:2] == b'PK':
+                is_docx = True
+
+        if is_pdf:
+            logging.info("Extraction PDF...")
             text = extract_text_from_pdf(file_bytes)
-        elif 'officedocument' in content_type or file_name.endswith('.docx'):
+        elif is_docx:
+            logging.info("Extraction DOCX...")
             text = extract_text_from_docx(file_bytes)
-        elif 'msword' in content_type or file_name.endswith('.doc'):
+        elif is_doc:
+            logging.info("Extraction DOC...")
             text = extract_text_from_doc(file_bytes)
         else:
-            return jsonify({'error': 'Format non supporté'}), 400
+            logging.error(f"Format non reconnu: {content_type} / {file_name}")
+            return jsonify({'error': f'Format non supporté: {content_type}'}), 400
+
+        logging.info(f"Texte extrait: {len(text)} caractères")
 
         if not text.strip():
-            return jsonify({'error': 'Impossible d\'extraire le texte du CV'}), 422
+            logging.warning("Texte vide après extraction")
+            return jsonify({
+                'anneesExperience': 0,
+                'competencesTech' : '',
+                'experienceProf'  : '',
+                'competencesPerso': '',
+                'dernierDiplome'  : '',
+                'ecoleUniversite' : '',
+                'anneeObtention'  : None,
+                'warning'         : 'Texte non extrait du CV'
+            }), 200
 
-        logging.info(f"Texte extrait ({len(text)} chars)")
-
-        # Parser les données
+        # ✅ Parser les données
         result = {
-            'anneesExperience' : parse_annees_experience(text),
-            'competencesTech'  : parse_competences_tech(text),
-            'experienceProf'   : parse_experience_prof(text),
-            'competencesPerso' : parse_competences_perso(text),
-            'dernierDiplome'   : parse_diplome(text),
-            'ecoleUniversite'  : parse_ecole(text),
-            'anneeObtention'   : parse_annee_obtention(text),
+            'anneesExperience': parse_annees_experience(text),
+            'competencesTech' : parse_competences_tech(text),
+            'experienceProf'  : parse_experience_prof(text),
+            'competencesPerso': parse_competences_perso(text),
+            'dernierDiplome'  : parse_diplome(text),
+            'ecoleUniversite' : parse_ecole(text),
+            'anneeObtention'  : parse_annee_obtention(text),
         }
 
         logging.info(f"Résultat: {json.dumps(result, ensure_ascii=False)}")
         return jsonify(result), 200
 
     except Exception as e:
-        logging.error(f"Erreur inattendue: {e}")
+        logging.error(f"Erreur inattendue: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
+
 
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'ok', 'message': 'CV Parser API running'}), 200
 
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
