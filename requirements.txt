@@ -1,8 +1,8 @@
-flask==3.0.0
-pdfplumber==0.11.0
-python-docx==1.1.0
-gunicorn==21.2.0
-spacy==3.7.4
-fr-core-news-sm @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_sm-3.7.0/fr_core_news_sm-3.7.0-py3-none-any.whl
+flask==2.3.3
+pdfplumber==0.10.3
+python-docx==0.8.11
+gunicorn==20.1.0
+spacy==3.6.1
+fr-core-news-sm @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_sm-3.6.0/fr_core_news_sm-3.6.0-py3-none-any.whl
 requests==2.31.0
-numpy==1.26.4
+numpy==1.24.3
