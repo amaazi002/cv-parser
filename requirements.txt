@@ -1,3 +1,5 @@
+setuptools==68.2.2
+wheel==0.41.2
 flask==2.3.3
 pdfplumber==0.10.3
 python-docx==0.8.11
