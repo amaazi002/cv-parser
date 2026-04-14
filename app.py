@@ -1,4 +1,3 @@
-
 import os
 import io
 import re
@@ -6,7 +5,6 @@ import json
 import base64
 import logging
 
-import spacy
 from flask import Flask, request, jsonify
 import pdfplumber
 from docx import Document
@@ -15,15 +13,11 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # ══════════════════════════════════════════════
-# CHARGEMENT MODÈLE NLP
+# NLP DÉSACTIVÉ — Render free tier
+# Parsing fonctionne avec regex uniquement
 # ══════════════════════════════════════════════
-
-try:
-    nlp = spacy.load('fr_core_news_sm')
-    logging.info("✅ Modèle spaCy chargé")
-except Exception as e:
-    logging.error(f"❌ Erreur chargement spaCy: {e}")
-    nlp = None
+nlp = None
+logging.info("✅ API démarrée — mode regex uniquement")
 
 # ══════════════════════════════════════════════
 # EXTRACTEURS DE TEXTE
@@ -67,6 +61,9 @@ def extract_text_from_doc(file_bytes):
 # ══════════════════════════════════════════════
 
 def split_sections(text):
+    """
+    Découpe le CV en sections selon les titres détectés
+    """
     sections = {
         'experience'  : '',
         'formation'   : '',
@@ -75,6 +72,7 @@ def split_sections(text):
         'autres'      : ''
     }
 
+    # Patterns des titres de sections
     section_patterns = {
         'experience': [
             r'exp[eé]riences?\s*professionnelles?',
@@ -97,7 +95,7 @@ def split_sections(text):
             r'academic\s*background'
         ],
         'competences': [
-            r'comp[eé]tences?\s*(?:techniques?|professionnelles?|cl[eé]s?)?',
+            r'comp[eé]tences?\s*(?:techniques?|professionnelles?|cls[eé]s?)?',
             r'savoir[\s\-]faire',
             r'expertise',
             r'technologies?',
@@ -117,9 +115,9 @@ def split_sections(text):
         ]
     }
 
-    lines   = text.split('\n')
-    current = 'autres'
-    buffer  = {k: [] for k in sections}
+    lines      = text.split('\n')
+    current    = 'autres'
+    buffer     = {k: [] for k in sections}
 
     for line in lines:
         line_clean = line.strip()
@@ -150,14 +148,19 @@ def split_sections(text):
 # ══════════════════════════════════════════════
 
 def parse_experience_prof_nlp(text_experience, text_complet):
+    """
+    Extrait les expériences professionnelles avec NLP
+    """
     source = text_experience if text_experience.strip() else text_complet
+
     if not source.strip():
         return ''
 
-    lignes    = [l.strip() for l in source.split('\n') if l.strip()]
+    lignes   = [l.strip() for l in source.split('\n') if l.strip()]
     resultats = []
     current_job = []
 
+    # Patterns pour détecter début d'un poste
     date_pattern = re.compile(
         r'\b(\d{4})\s*[-–—]\s*(\d{4}|présent|present|actuel|aujourd\'hui|en\s*cours)\b',
         re.IGNORECASE
@@ -170,6 +173,7 @@ def parse_experience_prof_nlp(text_experience, text_complet):
 
     for ligne in lignes:
         is_new_job = bool(date_pattern.search(ligne)) or bool(mois_pattern.search(ligne))
+
         if is_new_job and current_job:
             resultats.append(' | '.join(current_job))
             current_job = [ligne]
@@ -181,10 +185,11 @@ def parse_experience_prof_nlp(text_experience, text_complet):
     if current_job:
         resultats.append(' | '.join(current_job))
 
+    # Si NLP disponible → enrichir avec entités nommées
     if nlp and source:
         try:
-            doc  = nlp(source[:5000])
-            orgs = list({
+            doc      = nlp(source[:5000])
+            orgs     = list({
                 ent.text.strip()
                 for ent in doc.ents
                 if ent.label_ == 'ORG' and len(ent.text.strip()) > 2
@@ -198,18 +203,27 @@ def parse_experience_prof_nlp(text_experience, text_complet):
 
 
 def parse_competences_tech_nlp(text_competences, text_complet):
+    """
+    Extrait les compétences techniques avec NLP
+    """
     source = text_competences if text_competences.strip() else text_complet
+
     if not source.strip():
         return ''
 
-    lignes      = [l.strip() for l in source.split('\n') if l.strip()]
+    lignes    = [l.strip() for l in source.split('\n') if l.strip()]
     competences = []
+
+    # Patterns pour lignes de compétences
     separateurs = re.compile(r'[,;|•·\-–/]')
 
     for ligne in lignes:
+        # Ignorer les titres
         if re.match(r'^(compétences?|skills?|techniques?|outils?|technologies?)[\s:]*$',
                     ligne, re.IGNORECASE):
             continue
+
+        # Si la ligne contient des séparateurs → liste de compétences
         if separateurs.search(ligne):
             items = separateurs.split(ligne)
             for item in items:
@@ -219,7 +233,8 @@ def parse_competences_tech_nlp(text_competences, text_complet):
         elif len(ligne) < 80:
             competences.append(ligne)
 
-    seen   = set()
+    # Dédupliquer en gardant l'ordre
+    seen = set()
     unique = []
     for c in competences:
         c_lower = c.lower()
@@ -231,12 +246,17 @@ def parse_competences_tech_nlp(text_competences, text_complet):
 
 
 def parse_competences_perso_nlp(text_profil, text_complet):
+    """
+    Extrait les compétences personnelles / soft skills avec NLP
+    """
     source = text_profil if text_profil.strip() else text_complet
+
     if not source.strip():
         return ''
 
-    lignes      = [l.strip() for l in source.split('\n') if l.strip()]
+    lignes     = [l.strip() for l in source.split('\n') if l.strip()]
     soft_skills = []
+
     separateurs = re.compile(r'[,;|•·\-–/]')
 
     for ligne in lignes:
@@ -264,16 +284,21 @@ def parse_competences_perso_nlp(text_profil, text_complet):
 
 
 def parse_formation_nlp(text_formation, text_complet):
-    source  = text_formation if text_formation.strip() else text_complet
-    diplome = ''
-    ecole   = ''
-    annee   = None
+    """
+    Extrait diplôme, école et année avec NLP
+    """
+    source = text_formation if text_formation.strip() else text_complet
+
+    diplome      = ''
+    ecole        = ''
+    annee        = None
 
     if not source.strip():
         return diplome, ecole, annee
 
     lignes = [l.strip() for l in source.split('\n') if l.strip()]
 
+    # Patterns diplômes
     diplome_patterns = [
         r'(master\s*\d*\s*[^\n]{3,80})',
         r'(mastère\s*[^\n]{3,80})',
@@ -291,6 +316,7 @@ def parse_formation_nlp(text_formation, text_complet):
         r'(formation\s*[^\n]{3,80})',
     ]
 
+    # Patterns écoles
     ecole_patterns = [
         r'(universit[eé]\s*[^\n,;.]{3,80})',
         r'([eé]cole\s*(?:nationale|sup[eé]rieure|polytechnique|de|d\'|des|du)?\s*[^\n,;.]{3,80})',
@@ -307,12 +333,15 @@ def parse_formation_nlp(text_formation, text_complet):
     ]
 
     for ligne in lignes:
+        # Chercher diplôme
         if not diplome:
             for pat in diplome_patterns:
                 m = re.search(pat, ligne, re.IGNORECASE)
                 if m:
                     diplome = m.group(1).strip()[:120]
                     break
+
+        # Chercher école
         if not ecole:
             for pat in ecole_patterns:
                 m = re.search(pat, ligne, re.IGNORECASE)
@@ -320,6 +349,7 @@ def parse_formation_nlp(text_formation, text_complet):
                     ecole = m.group(1).strip()[:120]
                     break
 
+    # NLP pour les organisations (écoles)
     if nlp and not ecole:
         try:
             doc  = nlp(source[:3000])
@@ -333,6 +363,7 @@ def parse_formation_nlp(text_formation, text_complet):
         except Exception as e:
             logging.warning(f"NLP ecole: {e}")
 
+    # Chercher l'année dans la section formation
     years = re.findall(r'\b(20\d{2}|19\d{2})\b', source)
     if years:
         annee = max(int(y) for y in years)
@@ -341,7 +372,12 @@ def parse_formation_nlp(text_formation, text_complet):
 
 
 def parse_annees_experience_nlp(text_experience, text_complet):
-    source  = text_experience if text_experience.strip() else text_complet
+    """
+    Calcule les années d'expérience depuis les dates trouvées
+    """
+    source = text_experience if text_experience.strip() else text_complet
+
+    # Chercher mention directe
     mention = re.search(
         r'(\d+)\s*(?:\+\s*)?ans?\s*d[\'e]?\s*exp[eé]riences?',
         source, re.IGNORECASE
@@ -351,6 +387,7 @@ def parse_annees_experience_nlp(text_experience, text_complet):
         if 0 < val <= 50:
             return val
 
+    # Calculer depuis les plages de dates
     date_ranges = re.findall(
         r'(\d{4})\s*[-–—]\s*(\d{4}|présent|present|actuel|aujourd\'hui|en\s*cours)',
         source, re.IGNORECASE
@@ -361,7 +398,7 @@ def parse_annees_experience_nlp(text_experience, text_complet):
     total_mois     = 0
 
     for debut_str, fin_str in date_ranges:
-        debut     = int(debut_str)
+        debut = int(debut_str)
         fin_lower = fin_str.lower().strip()
         if any(w in fin_lower for w in ['présent', 'present', 'actuel', "aujourd", 'cours']):
             fin = annee_courante
@@ -370,6 +407,7 @@ def parse_annees_experience_nlp(text_experience, text_complet):
                 fin = int(fin_str)
             except ValueError:
                 fin = annee_courante
+
         if 1970 <= debut <= annee_courante and debut <= fin:
             total_mois += (fin - debut) * 12
 
@@ -380,184 +418,7 @@ def parse_annees_experience_nlp(text_experience, text_complet):
     return 0
 
 # ══════════════════════════════════════════════
-# MATCHING CV / OFFRE
-# ══════════════════════════════════════════════
-
-def calculate_score(cv_data, competences_requises, description_offre):
-    """
-    Compare les données du CV avec l'offre et retourne un score sur 100
-    """
-    score_total    = 0
-    details        = {}
-
-    # ── 1. Score compétences techniques (40 points) ──────────────
-    tech_cv    = cv_data.get('competencesTech', '').lower()
-    comp_req   = competences_requises.lower() if competences_requises else ''
-
-    if tech_cv and comp_req:
-        # Extraire les mots-clés de chaque côté
-        mots_cv    = set(re.findall(r'[a-zA-Z0-9#+.]{2,}', tech_cv))
-        mots_req   = set(re.findall(r'[a-zA-Z0-9#+.]{2,}', comp_req))
-
-        if mots_req:
-            intersection  = mots_cv & mots_req
-            score_tech    = round((len(intersection) / len(mots_req)) * 40)
-            score_tech    = min(score_tech, 40)
-        else:
-            score_tech = 20  # Score moyen si pas de compétences requises
-
-        # NLP similarité spaCy si disponible
-        if nlp and tech_cv and comp_req:
-            try:
-                doc_cv  = nlp(tech_cv[:1000])
-                doc_req = nlp(comp_req[:1000])
-                if doc_cv.vector_norm and doc_req.vector_norm:
-                    sim        = doc_cv.similarity(doc_req)
-                    nlp_score  = round(sim * 40)
-                    score_tech = round((score_tech + nlp_score) / 2)
-            except Exception as e:
-                logging.warning(f"NLP similarité tech: {e}")
-
-        details['competences_techniques'] = score_tech
-    else:
-        score_tech = 0
-        details['competences_techniques'] = 0
-
-    score_total += score_tech
-
-    # ── 2. Score expérience (25 points) ──────────────────────────
-    xp_cv        = cv_data.get('experienceProf', '').lower()
-    desc_offre   = description_offre.lower() if description_offre else ''
-
-    if xp_cv and desc_offre:
-        mots_xp    = set(re.findall(r'[a-zA-Z0-9#+.]{3,}', xp_cv))
-        mots_desc  = set(re.findall(r'[a-zA-Z0-9#+.]{3,}', desc_offre))
-
-        if mots_desc:
-            intersection  = mots_xp & mots_desc
-            score_xp      = round((len(intersection) / len(mots_desc)) * 25)
-            score_xp      = min(score_xp, 25)
-        else:
-            score_xp = 12
-
-        if nlp and xp_cv and desc_offre:
-            try:
-                doc_xp   = nlp(xp_cv[:1000])
-                doc_desc = nlp(desc_offre[:1000])
-                if doc_xp.vector_norm and doc_desc.vector_norm:
-                    sim       = doc_xp.similarity(doc_desc)
-                    nlp_score = round(sim * 25)
-                    score_xp  = round((score_xp + nlp_score) / 2)
-            except Exception as e:
-                logging.warning(f"NLP similarité xp: {e}")
-
-        details['experience'] = score_xp
-    else:
-        score_xp = 0
-        details['experience'] = 0
-
-    score_total += score_xp
-
-    # ── 3. Score années d'expérience (15 points) ─────────────────
-    annees_cv  = cv_data.get('anneesExperience', 0) or 0
-
-    # Chercher les années requises dans la description
-    annees_req_match = re.search(
-        r'(\d+)\s*(?:\+\s*)?ans?\s*d[\'e]?\s*exp[eé]riences?',
-        desc_offre, re.IGNORECASE
-    )
-
-    if annees_req_match:
-        annees_req  = int(annees_req_match.group(1))
-        if annees_cv >= annees_req:
-            score_annees = 15
-        elif annees_cv >= annees_req * 0.7:
-            score_annees = 10
-        elif annees_cv >= annees_req * 0.5:
-            score_annees = 5
-        else:
-            score_annees = 0
-    else:
-        # Pas d'années requises → score proportionnel
-        score_annees = min(round(annees_cv * 2), 15)
-
-    details['annees_experience'] = score_annees
-    score_total += score_annees
-
-    # ── 4. Score formation / diplôme (10 points) ─────────────────
-    diplome_cv = cv_data.get('dernierDiplome', '').lower()
-
-    if diplome_cv and desc_offre:
-        if nlp:
-            try:
-                doc_dip  = nlp(diplome_cv[:500])
-                doc_desc = nlp(desc_offre[:500])
-                if doc_dip.vector_norm and doc_desc.vector_norm:
-                    sim           = doc_dip.similarity(doc_desc)
-                    score_diplome = round(sim * 10)
-                else:
-                    score_diplome = 5
-            except Exception as e:
-                score_diplome = 5
-                logging.warning(f"NLP diplôme: {e}")
-        else:
-            score_diplome = 5
-    else:
-        score_diplome = 5  # Score neutre si pas de diplôme
-
-    details['formation'] = score_diplome
-    score_total += score_diplome
-
-    # ── 5. Score soft skills (10 points) ─────────────────────────
-    soft_cv = cv_data.get('competencesPerso', '').lower()
-
-    if soft_cv and (comp_req or desc_offre):
-        source_offre = (comp_req + ' ' + desc_offre).lower()
-        if nlp:
-            try:
-                doc_soft   = nlp(soft_cv[:500])
-                doc_offre  = nlp(source_offre[:500])
-                if doc_soft.vector_norm and doc_offre.vector_norm:
-                    sim        = doc_soft.similarity(doc_offre)
-                    score_soft = round(sim * 10)
-                else:
-                    score_soft = 5
-            except Exception as e:
-                score_soft = 5
-                logging.warning(f"NLP soft: {e}")
-        else:
-            mots_soft  = set(re.findall(r'[a-zA-Z]{3,}', soft_cv))
-            mots_off   = set(re.findall(r'[a-zA-Z]{3,}', source_offre))
-            if mots_off:
-                score_soft = round((len(mots_soft & mots_off) / len(mots_off)) * 10)
-                score_soft = min(score_soft, 10)
-            else:
-                score_soft = 5
-    else:
-        score_soft = 5
-
-    details['soft_skills'] = score_soft
-    score_total += score_soft
-
-    # ── Score final ───────────────────────────────────────────────
-    score_final = min(score_total, 100)
-
-    return {
-        'score'   : score_final,
-        'details' : details,
-        'niveau'  : get_niveau(score_final)
-    }
-
-
-def get_niveau(score):
-    if score >= 80: return 'Excellent'
-    if score >= 60: return 'Bon'
-    if score >= 40: return 'Moyen'
-    return 'Faible'
-
-
-# ══════════════════════════════════════════════
-# ROUTE PRINCIPALE — PARSE CV
+# ROUTE PRINCIPALE
 # ══════════════════════════════════════════════
 
 @app.route('/parse-cv', methods=['POST'])
@@ -578,6 +439,7 @@ def parse_cv():
         if not file_base64:
             return jsonify({'error': 'fileBase64 manquant'}), 400
 
+        # Nettoyer le base64
         if ',' in file_base64:
             file_base64 = file_base64.split(',')[1]
 
@@ -593,6 +455,7 @@ def parse_cv():
         except Exception as e:
             return jsonify({'error': f'Base64 invalide: {str(e)}'}), 400
 
+        # Détecter le type
         is_pdf  = 'pdf' in content_type or file_name.endswith('.pdf')
         is_docx = 'officedocument' in content_type or file_name.endswith('.docx')
         is_doc  = 'msword' in content_type or file_name.endswith('.doc')
@@ -603,6 +466,7 @@ def parse_cv():
             elif file_bytes[:2] == b'PK':
                 is_docx = True
 
+        # Extraire le texte
         text = ""
         if is_pdf:
             text = extract_text_from_pdf(file_bytes)
@@ -614,6 +478,7 @@ def parse_cv():
             return jsonify({'error': 'Format non supporté'}), 400
 
         logging.info(f"Texte extrait: {len(text)} caractères")
+        logging.info(f"Aperçu texte: {text[:200]}")
 
         if not text.strip():
             return jsonify({
@@ -627,8 +492,14 @@ def parse_cv():
                 'warning'         : 'Impossible d\'extraire le texte. CV peut être scanné.'
             }), 200
 
+        # Découper en sections
         sections = split_sections(text)
-        diplome, ecole, annee = parse_formation_nlp(sections['formation'], text)
+        logging.info(f"Sections trouvées: { {k: len(v) for k, v in sections.items()} }")
+
+        # Parser avec NLP
+        diplome, ecole, annee = parse_formation_nlp(
+            sections['formation'], text
+        )
 
         result = {
             'anneesExperience': parse_annees_experience_nlp(sections['experience'], text),
@@ -640,64 +511,13 @@ def parse_cv():
             'anneeObtention'  : annee,
         }
 
-        logging.info(f"Résultat parse: {json.dumps(result, ensure_ascii=False)[:300]}")
+        logging.info(f"Résultat: {json.dumps(result, ensure_ascii=False)[:300]}")
         return jsonify(result), 200
 
     except Exception as e:
         logging.error(f"Erreur: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
-
-# ══════════════════════════════════════════════
-# ROUTE MATCHING CV / OFFRE
-# ══════════════════════════════════════════════
-
-@app.route('/match-cv', methods=['POST'])
-def match_cv():
-    """
-    Reçoit le JSON du CV + détails de l'offre
-    Retourne un score sur 100
-    """
-    try:
-        data = request.get_json(force=True, silent=True)
-
-        if not data:
-            return jsonify({'error': 'Body JSON requis'}), 400
-
-        # ── Récupérer les données ────────────────────────────────
-        cv_data              = data.get('cvData', {})
-        competences_requises = data.get('competencesRequises', '')
-        description_offre    = data.get('descriptionOffre', '')
-
-        logging.info(f"Match CV - compétences requises: {competences_requises[:100]}")
-        logging.info(f"Match CV - description offre: {description_offre[:100]}")
-        logging.info(f"Match CV - cv_data: {json.dumps(cv_data, ensure_ascii=False)[:200]}")
-
-        if not cv_data:
-            return jsonify({'error': 'cvData manquant'}), 400
-
-        if not competences_requises and not description_offre:
-            return jsonify({'error': 'competencesRequises ou descriptionOffre requis'}), 400
-
-        # ── Calculer le score ────────────────────────────────────
-        result = calculate_score(cv_data, competences_requises, description_offre)
-
-        logging.info(f"Score matching: {result['score']} | Niveau: {result['niveau']}")
-
-        return jsonify({
-            'score'   : result['score'],
-            'niveau'  : result['niveau'],
-            'details' : result['details']
-        }), 200
-
-    except Exception as e:
-        logging.error(f"Erreur match-cv: {e}", exc_info=True)
-        return jsonify({'error': str(e)}), 500
-
-
-# ══════════════════════════════════════════════
-# HEALTH CHECK
-# ══════════════════════════════════════════════
 
 @app.route('/health', methods=['GET'])
 def health():
