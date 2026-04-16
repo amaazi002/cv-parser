@@ -518,6 +518,137 @@ def parse_cv():
         logging.error(f"Erreur: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
+def get_niveau(score):
+    if score >= 80: return 'Excellent'
+    if score >= 60: return 'Bon'
+    if score >= 40: return 'Moyen'
+    return 'Faible'
+
+
+def calculate_score(cv_data, competences_requises, description_offre):
+    score_total = 0
+    details     = {}
+
+    # ── 1. Compétences techniques (40 points) ──
+    tech_cv  = cv_data.get('competencesTech', '').lower()
+    comp_req = competences_requises.lower() if competences_requises else ''
+
+    if tech_cv and comp_req:
+        mots_cv  = set(re.findall(r'[a-zA-Z0-9#+.]{2,}', tech_cv))
+        mots_req = set(re.findall(r'[a-zA-Z0-9#+.]{2,}', comp_req))
+        if mots_req:
+            score_tech = round((len(mots_cv & mots_req) / len(mots_req)) * 40)
+            score_tech = min(score_tech, 40)
+        else:
+            score_tech = 20
+    else:
+        score_tech = 0
+
+    details['competences_techniques'] = score_tech
+    score_total += score_tech
+
+    # ── 2. Expérience (25 points) ──
+    xp_cv      = cv_data.get('experienceProf', '').lower()
+    desc_offre = description_offre.lower() if description_offre else ''
+
+    if xp_cv and desc_offre:
+        mots_xp   = set(re.findall(r'[a-zA-Z0-9#+.]{3,}', xp_cv))
+        mots_desc = set(re.findall(r'[a-zA-Z0-9#+.]{3,}', desc_offre))
+        if mots_desc:
+            score_xp = round((len(mots_xp & mots_desc) / len(mots_desc)) * 25)
+            score_xp = min(score_xp, 25)
+        else:
+            score_xp = 12
+    else:
+        score_xp = 0
+
+    details['experience'] = score_xp
+    score_total += score_xp
+
+    # ── 3. Années expérience (15 points) ──
+    annees_cv        = cv_data.get('anneesExperience', 0) or 0
+    annees_req_match = re.search(
+        r'(\d+)\s*(?:\+\s*)?ans?\s*d[\'e]?\s*exp[eé]riences?',
+        desc_offre, re.IGNORECASE
+    )
+
+    if annees_req_match:
+        annees_req = int(annees_req_match.group(1))
+        if annees_cv >= annees_req:
+            score_annees = 15
+        elif annees_cv >= annees_req * 0.7:
+            score_annees = 10
+        elif annees_cv >= annees_req * 0.5:
+            score_annees = 5
+        else:
+            score_annees = 0
+    else:
+        score_annees = min(round(annees_cv * 2), 15)
+
+    details['annees_experience'] = score_annees
+    score_total += score_annees
+
+    # ── 4. Formation (10 points) ──
+    details['formation'] = 5
+    score_total += 5
+
+    # ── 5. Soft skills (10 points) ──
+    soft_cv = cv_data.get('competencesPerso', '').lower()
+    if soft_cv and (comp_req or desc_offre):
+        source_offre = (comp_req + ' ' + desc_offre).lower()
+        mots_soft    = set(re.findall(r'[a-zA-Z]{3,}', soft_cv))
+        mots_off     = set(re.findall(r'[a-zA-Z]{3,}', source_offre))
+        if mots_off:
+            score_soft = round((len(mots_soft & mots_off) / len(mots_off)) * 10)
+            score_soft = min(score_soft, 10)
+        else:
+            score_soft = 5
+    else:
+        score_soft = 5
+
+    details['soft_skills'] = score_soft
+    score_total += score_soft
+
+    return {
+        'score'  : min(score_total, 100),
+        'niveau' : get_niveau(min(score_total, 100)),
+        'details': details
+    }
+
+
+@app.route('/match-cv', methods=['POST'])
+def match_cv():
+    try:
+        data = request.get_json(force=True, silent=True)
+
+        if not data:
+            return jsonify({'error': 'Body JSON requis'}), 400
+
+        cv_data              = data.get('cvData', {})
+        competences_requises = data.get('competencesRequises', '')
+        description_offre    = data.get('descriptionOffre', '')
+
+        logging.info(f"Match CV reçu")
+        logging.info(f"competencesRequises: {competences_requises[:100]}")
+        logging.info(f"descriptionOffre: {description_offre[:100]}")
+
+        if not cv_data:
+            return jsonify({'error': 'cvData manquant'}), 400
+
+        result = calculate_score(cv_data, competences_requises, description_offre)
+
+        logging.info(f"Score: {result['score']} | Niveau: {result['niveau']}")
+
+        return jsonify({
+            'score'  : result['score'],
+            'niveau' : result['niveau'],
+            'details': result['details']
+        }), 200
+
+    except Exception as e:
+        logging.error(f"Erreur match-cv: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/health', methods=['GET'])
 def health():
