@@ -529,47 +529,121 @@ def calculate_score(cv_data, competences_requises, description_offre):
     score_total = 0
     details     = {}
 
-    # ── 1. Compétences techniques (40 points) ──
+    # ✅ Texte complet offre
+    texte_offre = (
+        (competences_requises or '') + ' ' +
+        (description_offre    or '')
+    ).lower().strip()
+
+    # ✅ Texte complet CV
+    texte_cv = (
+        (cv_data.get('competencesTech',  '') or '') + ' ' +
+        (cv_data.get('experienceProf',   '') or '') + ' ' +
+        (cv_data.get('competencesPerso', '') or '') + ' ' +
+        (cv_data.get('dernierDiplome',   '') or '') + ' ' +
+        (cv_data.get('ecoleUniversite',  '') or '')
+    ).lower().strip()
+
+    # ══════════════════════════════════════
+    # FONCTION HELPER — matching intelligent
+    # ══════════════════════════════════════
+    def extract_mots(texte, min_len=2):
+        """Extrait les mots significatifs"""
+        # Supprimer les mots vides français
+        mots_vides = {
+            'les', 'des', 'une', 'est', 'pour', 'avec', 'dans',
+            'sur', 'par', 'qui', 'que', 'not', 'les', 'aux',
+            'the', 'and', 'for', 'with', 'this', 'that', 'are'
+        }
+        mots = set(re.findall(r'[a-zA-Z0-9#+.\-]{%d,}' % min_len, texte))
+        return {m for m in mots if m not in mots_vides}
+
+    def score_matching(texte_a, texte_b, max_score):
+        """
+        Calcule un score de matching intelligent entre deux textes
+        """
+        if not texte_a or not texte_b:
+            return max_score // 3
+
+        mots_a = extract_mots(texte_a)
+        mots_b = extract_mots(texte_b)
+
+        if not mots_a or not mots_b:
+            return max_score // 3
+
+        # ✅ Matching exact
+        exact = mots_a & mots_b
+
+        # ✅ Matching partiel (sous-chaîne)
+        partiel = set()
+        for mot_b in mots_b:
+            if mot_b in exact:
+                continue
+            for mot_a in mots_a:
+                if (mot_b in mot_a or mot_a in mot_b) and \
+                   abs(len(mot_a) - len(mot_b)) <= 3:
+                    partiel.add(mot_b)
+                    break
+
+        # ✅ Calculer ratio
+        total_matches  = len(exact) + len(partiel) * 0.7
+        ratio          = total_matches / len(mots_b)
+        ratio          = min(ratio, 1.0)
+
+        # ✅ Bonus si beaucoup de mots dans le CV
+        bonus = 0
+        if len(mots_a) > 20:
+            bonus = max_score * 0.1
+
+        score = round(ratio * max_score + bonus)
+        return min(score, max_score)
+
+    # ══════════════════════════════════════
+    # 1. Compétences techniques (40 points)
+    # ══════════════════════════════════════
     tech_cv  = cv_data.get('competencesTech', '').lower()
     comp_req = competences_requises.lower() if competences_requises else ''
 
     if tech_cv and comp_req:
-        mots_cv  = set(re.findall(r'[a-zA-Z0-9#+.]{2,}', tech_cv))
-        mots_req = set(re.findall(r'[a-zA-Z0-9#+.]{2,}', comp_req))
-        if mots_req:
-            score_tech = round((len(mots_cv & mots_req) / len(mots_req)) * 40)
-            score_tech = min(score_tech, 40)
-        else:
-            score_tech = 20
+        score_tech = score_matching(tech_cv, comp_req, 40)
+    elif tech_cv and texte_offre:
+        # ✅ Si pas de comp_req → comparer avec description
+        score_tech = score_matching(tech_cv, texte_offre, 40)
+        score_tech = round(score_tech * 0.8)
+    elif tech_cv:
+        score_tech = 20  # CV a des compétences
     else:
         score_tech = 0
 
     details['competences_techniques'] = score_tech
     score_total += score_tech
 
-    # ── 2. Expérience (25 points) ──
+    # ══════════════════════════════════════
+    # 2. Expérience (25 points)
+    # ══════════════════════════════════════
     xp_cv      = cv_data.get('experienceProf', '').lower()
     desc_offre = description_offre.lower() if description_offre else ''
 
     if xp_cv and desc_offre:
-        mots_xp   = set(re.findall(r'[a-zA-Z0-9#+.]{3,}', xp_cv))
-        mots_desc = set(re.findall(r'[a-zA-Z0-9#+.]{3,}', desc_offre))
-        if mots_desc:
-            score_xp = round((len(mots_xp & mots_desc) / len(mots_desc)) * 25)
-            score_xp = min(score_xp, 25)
-        else:
-            score_xp = 12
+        score_xp = score_matching(xp_cv, desc_offre, 25)
+    elif xp_cv and texte_offre:
+        score_xp = score_matching(xp_cv, texte_offre, 25)
+        score_xp = round(score_xp * 0.8)
+    elif xp_cv:
+        score_xp = 12
     else:
         score_xp = 0
 
     details['experience'] = score_xp
     score_total += score_xp
 
-    # ── 3. Années expérience (15 points) ──
+    # ══════════════════════════════════════
+    # 3. Années expérience (15 points)
+    # ══════════════════════════════════════
     annees_cv        = cv_data.get('anneesExperience', 0) or 0
     annees_req_match = re.search(
         r'(\d+)\s*(?:\+\s*)?ans?\s*d[\'e]?\s*exp[eé]riences?',
-        desc_offre, re.IGNORECASE
+        texte_offre, re.IGNORECASE
     )
 
     if annees_req_match:
@@ -579,39 +653,90 @@ def calculate_score(cv_data, competences_requises, description_offre):
         elif annees_cv >= annees_req * 0.7:
             score_annees = 10
         elif annees_cv >= annees_req * 0.5:
-            score_annees = 5
+            score_annees = 7
+        elif annees_cv > 0:
+            score_annees = 3
         else:
             score_annees = 0
     else:
-        score_annees = min(round(annees_cv * 2), 15)
+        if annees_cv >= 5:   score_annees = 15
+        elif annees_cv >= 3: score_annees = 12
+        elif annees_cv >= 1: score_annees = 8
+        else:                score_annees = 5
 
     details['annees_experience'] = score_annees
     score_total += score_annees
 
-    # ── 4. Formation (10 points) ──
-    details['formation'] = 5
-    score_total += 5
+    # ══════════════════════════════════════
+    # 4. Formation / Diplôme (10 points)
+    # ══════════════════════════════════════
+    diplome_cv = cv_data.get('dernierDiplome', '').lower()
 
-    # ── 5. Soft skills (10 points) ──
-    soft_cv = cv_data.get('competencesPerso', '').lower()
-    if soft_cv and (comp_req or desc_offre):
-        source_offre = (comp_req + ' ' + desc_offre).lower()
-        mots_soft    = set(re.findall(r'[a-zA-Z]{3,}', soft_cv))
-        mots_off     = set(re.findall(r'[a-zA-Z]{3,}', source_offre))
-        if mots_off:
-            score_soft = round((len(mots_soft & mots_off) / len(mots_off)) * 10)
-            score_soft = min(score_soft, 10)
-        else:
-            score_soft = 5
+    niveaux = {
+        'doctorat' : 5, 'phd'     : 5,
+        'master'   : 4, 'mastère' : 4, 'bac+5' : 4,
+        'licence'  : 3, 'bac+3'   : 3, 'bac+4' : 3,
+        'bts'      : 2, 'dut'     : 2, 'bac+2' : 2,
+        'bac'      : 1
+    }
+
+    niveau_cv  = 0
+    niveau_req = 0
+
+    for niveau, val in niveaux.items():
+        if niveau in diplome_cv:
+            niveau_cv = val
+            break
+
+    for niveau, val in niveaux.items():
+        if niveau in texte_offre:
+            niveau_req = val
+            break
+
+    if niveau_req == 0:
+        # ✅ Pas de niveau requis → score basé sur niveau CV
+        score_diplome = min(niveau_cv * 2, 10) if niveau_cv > 0 else 5
+    elif niveau_cv >= niveau_req:
+        score_diplome = 10
+    elif niveau_cv == niveau_req - 1:
+        score_diplome = 7
+    elif niveau_cv > 0:
+        score_diplome = 4
     else:
+        score_diplome = 2
+
+    details['formation'] = score_diplome
+    score_total += score_diplome
+
+    # ══════════════════════════════════════
+    # 5. Soft skills (10 points)
+    # ══════════════════════════════════════
+    soft_cv = cv_data.get('competencesPerso', '').lower()
+
+    if soft_cv and texte_offre:
+        score_soft = score_matching(soft_cv, texte_offre, 10)
+        # ✅ Bonus si beaucoup de soft skills
+        if len(soft_cv) > 50:
+            score_soft = max(score_soft, 5)
+    elif soft_cv:
         score_soft = 5
+    else:
+        score_soft = 0
 
     details['soft_skills'] = score_soft
     score_total += score_soft
 
+    # ══════════════════════════════════════
+    # Score final
+    # ══════════════════════════════════════
+    score_final = min(score_total, 100)
+
+    logging.info(f"Détails : {details}")
+    logging.info(f"Score final : {score_final}")
+
     return {
-        'score'  : min(score_total, 100),
-        'niveau' : get_niveau(min(score_total, 100)),
+        'score'  : score_final,
+        'niveau' : get_niveau(score_final),
         'details': details
     }
 
