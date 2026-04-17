@@ -1,12 +1,9 @@
-setuptools==68.2.2
-wheel==0.41.2
 flask==2.3.3
 pdfplumber==0.10.3
 python-docx==0.8.11
 gunicorn==20.1.0
 requests==2.31.0
-numpy==1.24.3
-blis==0.7.11
-thinc==8.1.12
+setuptools==68.2.2
+wheel==0.41.2
 spacy==3.6.1
-fr-core-news-sm @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_sm-3.6.0/fr_core_news_sm-3.6.0-py3-none-any.whl
+fr-core-news-md @ https://github.com/explosion/spacy-models/releases/download/fr_core_news_md-3.6.0/fr_core_news_md-3.6.0-py3-none-any.whl
